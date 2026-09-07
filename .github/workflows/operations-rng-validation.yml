@@ -1,0 +1,128 @@
+name: Owned RNG platform validation
+
+on:
+  push:
+    branches: [ops/libevent198-rng-validation-1081]
+
+permissions:
+  contents: read
+
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: 'false'
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [cng, cryptoapi]
+        library: [SHARED, STATIC]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify production source identity
+        shell: pwsh
+        run: |
+          $expected = @{
+            'evutil_rand.c' = '1ab0ec59d840616ec0cd353979850d5a095480e4c0be46ab6b3dbdbfd28f6a43'
+            'include/event2/util.h' = 'ef94085b5dca92986e223db11df9e0c1658eec94790b0ff260dda3fc2ac335bf'
+            'test/regress_util.c' = '3aae8868a7a9a22ff61db106d5a390fd6bb18aaa0a17f1fe4f1f8eb7dbe2452e'
+            'Makefile.am' = '0ea16b3f6cea2bd71bcfefe60ad0aa48a2429eb4e4aa396cecf5b7a3ede9baea'
+          }
+          foreach ($path in $expected.Keys) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            if ($actual -ne $expected[$path]) { throw "Source identity mismatch: $path" }
+          }
+          if (Test-Path -LiteralPath 'arc4random.c') { throw 'Legacy generator remains' }
+          git rev-parse HEAD
+      - name: Configure and verify selected provider
+        shell: pwsh
+        run: |
+          $cng = if ('${{ matrix.provider }}' -eq 'cng') { '1' } else { '0' }
+          cmake -S . -B build -G 'Visual Studio 17 2022' -A x64 `
+            -DEVENT__DISABLE_OPENSSL=ON -DEVENT__DISABLE_MBEDTLS=ON `
+            -DEVENT__DISABLE_SAMPLES=ON -DEVENT__DISABLE_BENCHMARK=ON `
+            -DEVENT__LIBRARY_TYPE=${{ matrix.library }} -DEVENT__MSVC_STATIC_RUNTIME=OFF `
+            -DEVENT__HAVE_ARC4RANDOM=0 -DEVENT__HAVE_ARC4RANDOM_BUF=0 `
+            -DEVENT__HAVE_BCRYPTGENRANDOM=$cng
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $config = Get-Content -Raw build/include/event2/event-config.h
+          $hasCng = $config -match '(?m)^#define EVENT__HAVE_BCRYPTGENRANDOM 1\r?$'
+          if ($hasCng -ne ($cng -eq '1')) { throw 'Unexpected Windows RNG provider' }
+          if ($config -match '(?m)^#define EVENT__HAVE_ARC4RANDOM ') { throw 'Unexpected native RNG' }
+      - name: Build and run only focused RNG tests
+        shell: pwsh
+        run: |
+          cmake --build build --config Debug --target regress --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/bin/Debug/regress.exe -j 0 util/rand util/rand_lifecycle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  autotools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        getrandom: ['yes', 'no']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify production source identity
+        shell: bash
+        run: |
+          sha256sum --check <<'HASHES'
+          1ab0ec59d840616ec0cd353979850d5a095480e4c0be46ab6b3dbdbfd28f6a43  evutil_rand.c
+          ef94085b5dca92986e223db11df9e0c1658eec94790b0ff260dda3fc2ac335bf  include/event2/util.h
+          3aae8868a7a9a22ff61db106d5a390fd6bb18aaa0a17f1fe4f1f8eb7dbe2452e  test/regress_util.c
+          0ea16b3f6cea2bd71bcfefe60ad0aa48a2429eb4e4aa396cecf5b7a3ede9baea  Makefile.am
+          HASHES
+          test ! -e arc4random.c
+          git rev-parse HEAD
+      - name: Create and inspect source distribution
+        shell: bash
+        run: |
+          autoconf --version
+          automake --version
+          libtoolize --version
+          ./autogen.sh
+          mkdir distribution
+          (
+            cd distribution
+            ../configure --disable-openssl --disable-mbedtls --disable-samples
+            make dist
+          )
+          archives=(distribution/libevent-*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          test -f "${archives[0]}"
+          mkdir package
+          tar -xzf "${archives[0]}" --strip-components=1 -C package
+          test ! -e package/arc4random.c
+          for file in evutil_rand.c include/event2/util.h test/regress_util.c Makefile.am; do
+            cmp "$file" "package/$file"
+          done
+      - name: Build packaged fallback and run only focused RNG tests
+        shell: bash
+        run: |
+          mkdir package/build
+          cd package/build
+          ac_cv_func_arc4random=no ac_cv_func_arc4random_buf=no \
+            ac_cv_func_getrandom=${{ matrix.getrandom }} \
+            ../configure --disable-openssl --disable-mbedtls --disable-samples
+          make include/event2/event-config.h
+          if grep -q '^#define EVENT__HAVE_ARC4RANDOM ' include/event2/event-config.h; then
+            exit 1
+          fi
+          if [ '${{ matrix.getrandom }}' = yes ]; then
+            grep -q '^#define EVENT__HAVE_GETRANDOM 1$' include/event2/event-config.h
+          elif grep -q '^#define EVENT__HAVE_GETRANDOM ' include/event2/event-config.h; then
+            exit 1
+          fi
+          make -j 2 test/regress libevent_core.la
+          ./test/regress -j 0 util/rand util/rand_lifecycle
