@@ -958,6 +958,39 @@ end:
 	;
 }
 
+#if !defined(_WIN32) && !defined(EVENT__HAVE_ARC4RANDOM)
+static void
+test_evutil_rand_custom_device(void *arg)
+{
+	char device[] = "/dev/urandom";
+	unsigned char buf[40];
+	size_t i;
+	int changed = 0;
+
+	if (access(device, R_OK) < 0)
+		tt_skip();
+
+	tt_int_op(evutil_secure_rng_set_urandom_device_file(device), ==, 0);
+	tt_int_op(evutil_secure_rng_init(), ==, 0);
+	memset(buf, 0x5a, sizeof(buf));
+	evutil_secure_rng_get_bytes(buf + 4, 32);
+	for (i = 0; i < 4; ++i) {
+		tt_int_op(buf[i], ==, 0x5a);
+		tt_int_op(buf[36 + i], ==, 0x5a);
+	}
+	for (i = 4; i < 36; ++i) {
+		if (buf[i] != 0x5a) {
+			changed = 1;
+			break;
+		}
+	}
+	tt_int_op(changed, ==, 1);
+	tt_int_op(evutil_secure_rng_set_urandom_device_file(NULL), ==, -1);
+end:
+	;
+}
+#endif
+
 static void
 test_evutil_rand(void *arg)
 {
@@ -1892,6 +1925,9 @@ struct testcase_t util_testcases[] = {
 	{ "integers", test_evutil_integers, 0, NULL, NULL },
 	{ "rand", test_evutil_rand, TT_FORK, NULL, NULL },
 	{ "rand_lifecycle", test_evutil_rand_lifecycle, TT_FORK, NULL, NULL },
+#if !defined(_WIN32) && !defined(EVENT__HAVE_ARC4RANDOM)
+	{ "rand_custom_device", test_evutil_rand_custom_device, TT_FORK, NULL, NULL },
+#endif
 	{ "EVUTIL_IS_", test_EVUTIL_IS_, 0, NULL, NULL },
 	{ "getaddrinfo", test_evutil_getaddrinfo, TT_FORK, NULL, NULL },
 	{ "getaddrinfo_live", test_evutil_getaddrinfo_live, TT_FORK|TT_OFF_BY_DEFAULT, NULL, NULL },
