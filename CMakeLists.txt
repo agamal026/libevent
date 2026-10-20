@@ -1360,6 +1360,9 @@ if (NOT EVENT__DISABLE_TESTS)
     foreach (TESTPROG ${TESTPROGS} test-dumpevents)
         add_test_prog(${TESTPROG})
     endforeach()
+    add_test_prog(test-allocfail)
+    add_test(test-allocfail ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/test-allocfail)
+    set_tests_properties(test-allocfail PROPERTIES SKIP_RETURN_CODE 77)
     if (UNIX)
         add_test_prog(test-ratelim m)
     else()
@@ -1369,6 +1372,7 @@ if (NOT EVENT__DISABLE_TESTS)
     set(ALL_TESTPROGS
         ${TESTPROGS}
         test-dumpevents
+        test-allocfail
         test-ratelim
     )
 

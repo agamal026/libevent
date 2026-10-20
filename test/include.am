@@ -15,6 +15,7 @@ EXTRA_DIST+=					\
 	test/test.sh
 
 TESTPROGRAMS = \
+	test/test-allocfail \
 	test/bench					\
 	test/bench_cascade				\
 	test/bench_http				\
@@ -90,6 +91,11 @@ test_runner_timerfd_changelist: $(top_srcdir)/test/test.sh
 	$(top_srcdir)/test/test.sh -b "" -T
 test_runner_signalfd: $(top_srcdir)/test/test.sh
 	$(top_srcdir)/test/test.sh -b "" -S
+if BUILD_REGRESS
+check-local: test/test-allocfail$(EXEEXT)
+	@./test/test-allocfail$(EXEEXT); status=$$?; \
+	  test $$status -eq 0 || test $$status -eq 77
+endif
 
 DISTCLEANFILES += test/regress.gen.c test/regress.gen.h
 
@@ -98,6 +104,8 @@ BUILT_SOURCES += test/regress.gen.c test/regress.gen.h
 endif
 
 test_test_init_SOURCES = test/test-init.c
+test_test_allocfail_SOURCES = test/test-allocfail.c
+test_test_allocfail_LDADD = libevent_core.la
 test_test_init_LDADD = libevent_core.la
 test_test_dumpevents_SOURCES = test/test-dumpevents.c
 test_test_dumpevents_LDADD = libevent_core.la
