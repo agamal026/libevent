@@ -38,12 +38,15 @@ git format-patch --stdout -2
 timers. Each scenario first counts allocations in a successful control, then
 replays it with each allocation failing in turn. Setup and cleanup run without
 injection; the scenarios check preserved state and recovery after failure.
-This covers allocations reached by the successful control, not additional
-allocations reached only on error paths.
+Successful buffer expansion must permit an allocation-free append. Timers
+scheduled before a failed heap growth must expire through the event loop
+without being rescheduled. This suite covers allocations reached by the
+successful control; it does not provide a probabilistic workload or cover
+additional allocations reached only on error paths.
 
 Both CMake's `verify` target and Autotools' `make verify` run this executable
-directly, including in the existing AddressSanitizer CI configuration, so
-sanitizer failures at process exit propagate to the test runner. Builds without
+directly. When built with sanitizers, failures at process exit propagate to
+the test runner. Builds without
 memory replacement skip it. To run it alone with CMake, use
 `ctest --test-dir build -R '^test-allocfail$' --output-on-failure` after building.
 

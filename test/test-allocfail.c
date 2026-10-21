@@ -86,6 +86,8 @@ test_buffer_expand(unsigned nth)
 	struct evbuffer *buffer = NULL;
 	char contents[8192];
 	char copy[sizeof(contents)];
+	unsigned expansion_allocations, append_allocations;
+	int expansion_injected;
 	int status;
 	int result = 1;
 
@@ -101,8 +103,20 @@ test_buffer_expand(unsigned nth)
 	CHECK(evbuffer_get_length(buffer) == 4);
 	CHECK(evbuffer_copyout(buffer, copy, 4) == 4);
 	CHECK(memcmp(copy, "data", 4) == 0);
-	CHECK(evbuffer_expand(buffer, sizeof(contents)) == 0);
-	CHECK(evbuffer_add(buffer, contents, sizeof(contents)) == 0);
+	if (status == -1)
+		CHECK(evbuffer_expand(buffer, sizeof(contents)) == 0);
+	/* A reported success must provide capacity without another allocation. */
+	expansion_allocations = allocation_count;
+	expansion_injected = injected;
+	start_tracking(1);
+	status = evbuffer_add(buffer, contents, sizeof(contents));
+	tracking = 0;
+	append_allocations = allocation_count;
+	allocation_count = expansion_allocations;
+	fail_at = nth;
+	injected = expansion_injected;
+	CHECK(status == 0);
+	CHECK(append_allocations == 0);
 	CHECK(evbuffer_drain(buffer, 4) == 0);
 	CHECK(evbuffer_remove(buffer, copy, sizeof(copy)) == (int)sizeof(copy));
 	CHECK(memcmp(copy, contents, sizeof(copy)) == 0);
@@ -118,8 +132,10 @@ timer_cb(evutil_socket_t fd, short events, void *arg)
 {
 	int *called = arg;
 	(void)fd;
-	(void)events;
-	++*called;
+	if (events != EV_TIMEOUT || *called < 0)
+		*called = -1;
+	else
+		++*called;
 }
 
 static int
@@ -127,6 +143,7 @@ test_event_new(unsigned nth)
 {
 	struct event_base *base = NULL;
 	struct event *event = NULL;
+	struct timeval delay = {0, 0};
 	int called = 0;
 	int result = 1;
 
@@ -139,7 +156,7 @@ test_event_new(unsigned nth)
 	if (!event)
 		event = evtimer_new(base, timer_cb, &called);
 	CHECK(event != NULL);
-	event_active(event, EV_TIMEOUT, 0);
+	CHECK(evtimer_add(event, &delay) == 0);
 	CHECK(event_base_loop(base, EVLOOP_NONBLOCK) >= 0);
 	CHECK(called == 1);
 	result = 0;
@@ -156,7 +173,7 @@ test_timer_add(unsigned nth)
 {
 	struct event_base *base = NULL;
 	struct event *events[64] = {NULL};
-	struct timeval delay = {60, 0};
+	struct timeval delay = {0, 0};
 	unsigned i, added;
 	int called[64] = {0};
 	int status = 0;
@@ -177,13 +194,14 @@ test_timer_add(unsigned nth)
 	}
 	tracking = 0;
 	CHECK(status == 0 || (status == -1 && injected));
-	for (i = 0; i < 64; ++i) {
+	for (i = 0; i < 64; ++i)
 		CHECK(!!evtimer_pending(events[i], NULL) == (i < added));
+	/* Preserve the successful prefix; retry only the unadded suffix. */
+	for (i = added; i < 64; ++i) {
 		CHECK(evtimer_add(events[i], &delay) == 0);
 		CHECK(evtimer_pending(events[i], NULL));
 	}
-	for (i = 0; i < 64; ++i)
-		event_active(events[i], EV_TIMEOUT, 0);
+	/* Delivery must come from the timeout heap, not manual activation. */
 	CHECK(event_base_loop(base, EVLOOP_NONBLOCK) >= 0);
 	for (i = 0; i < 64; ++i) {
 		CHECK(called[i] == 1);
